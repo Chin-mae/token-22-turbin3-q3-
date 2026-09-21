@@ -2,8 +2,9 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program::invoke;
 use anchor_spl::token_interface::{
-    initialize_mint2, mint_close_authority_initialize, spl_token_2022, transfer_fee_initialize,
-    InitializeMint2, Mint, MintCloseAuthorityInitialize, TokenInterface, TransferFeeInitialize,
+    default_account_state_initialize, initialize_mint2, metadata_pointer_initialize,
+    mint_close_authority_initialize, spl_token_2022, transfer_fee_initialize, InitializeMint2,
+    Mint, MintCloseAuthorityInitialize, TokenInterface, TransferFeeInitialize,
 };
 use spl_token_2022::{
     extension::{
@@ -11,7 +12,7 @@ use spl_token_2022::{
         transfer_fee::TransferFeeConfig, BaseStateWithExtensions, ExtensionType,
         StateWithExtensions,
     },
-    state::Mint as MintState,
+    state::{AccountState, Mint as MintState},
 };
 
 // The length of a ciphertext which is how a decryptable balance is represented in the account data
@@ -139,6 +140,121 @@ pub mod t22 {
             ctx.accounts.mint.key(),
             space
         );
+        Ok(())
+    }
+
+    pub fn create_remittance_mint(
+        ctx: Context<CreateRemittanceMint>,
+        decimals: u8,
+        basis_points: u16,
+        maximum_fee: u64,
+        name: String,
+        symbol: String,
+        uri: String,
+    ) -> Result<()> {
+        let extensions = [
+            ExtensionType::TransferFeeConfig,
+            ExtensionType::MetadataPointer,
+            ExtensionType::DefaultAccountState,
+            ExtensionType::MintCloseAuthority,
+        ];
+        let space = ExtensionType::try_calculate_account_len::<MintState>(&extensions)?;
+        let lamports = Rent::get()?.minimum_balance(space);
+
+        anchor_lang::system_program::create_account(
+            CpiContext::new(
+                ctx.accounts.system_program.key(),
+                anchor_lang::system_program::CreateAccount {
+                    from: ctx.accounts.payer.to_account_info(),
+                    to: ctx.accounts.mint.to_account_info(),
+                },
+            ),
+            lamports,
+            space as u64,
+            &ctx.accounts.token_program.key(),
+        )?;
+
+        mint_close_authority_initialize(
+            CpiContext::new(
+                ctx.accounts.token_program.key(),
+                MintCloseAuthorityInitialize {
+                    token_program_id: ctx.accounts.token_program.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
+                },
+            ),
+            Some(&ctx.accounts.payer.key()),
+        )?;
+
+        metadata_pointer_initialize(
+            CpiContext::new(
+                ctx.accounts.token_program.key(),
+                anchor_spl::token_interface::MetadataPointerInitialize {
+                    token_program_id: ctx.accounts.token_program.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
+                },
+            ),
+            Some(ctx.accounts.payer.key()),
+            Some(ctx.accounts.mint.key()),
+        )?;
+
+        default_account_state_initialize(
+            CpiContext::new(
+                ctx.accounts.token_program.key(),
+                anchor_spl::token_interface::DefaultAccountStateInitialize {
+                    token_program_id: ctx.accounts.token_program.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
+                },
+            ),
+            &AccountState::Frozen,
+        )?;
+
+        transfer_fee_initialize(
+            CpiContext::new(
+                ctx.accounts.token_program.key(),
+                TransferFeeInitialize {
+                    token_program_id: ctx.accounts.token_program.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
+                },
+            ),
+            Some(&ctx.accounts.payer.key()),
+            Some(&ctx.accounts.payer.key()),
+            basis_points,
+            maximum_fee,
+        )?;
+
+        let metadata_ix = anchor_spl::token_2022_extensions::spl_token_metadata_interface::instruction::initialize(
+            &ctx.accounts.token_program.key(),
+            &ctx.accounts.mint.key(),
+            &ctx.accounts.payer.key(),
+            &ctx.accounts.mint.key(),
+            &ctx.accounts.payer.key(),
+            name,
+            symbol,
+            uri,
+        );
+        invoke(
+            &metadata_ix,
+            &[
+                ctx.accounts.mint.to_account_info(),
+                ctx.accounts.payer.to_account_info(),
+                ctx.accounts.mint.to_account_info(),
+                ctx.accounts.payer.to_account_info(),
+                ctx.accounts.token_program.to_account_info(),
+            ],
+        )?;
+
+        initialize_mint2(
+            CpiContext::new(
+                ctx.accounts.token_program.key(),
+                InitializeMint2 {
+                    mint: ctx.accounts.mint.to_account_info(),
+                },
+            ),
+            decimals,
+            &ctx.accounts.payer.key(),
+            Some(&ctx.accounts.payer.key()),
+        )?;
+
         Ok(())
     }
 
@@ -372,6 +488,19 @@ pub struct CreateMintWithFee<'info> {
     #[account(mut, signer)]
     pub mint: UncheckedAccount<'info>,
  
+    pub token_program: Interface<'info, TokenInterface>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct CreateRemittanceMint<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    /// CHECK: created and initialized in the handler.
+    #[account(mut, signer)]
+    pub mint: UncheckedAccount<'info>,
+
     pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
