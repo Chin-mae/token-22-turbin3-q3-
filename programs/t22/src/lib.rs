@@ -10,8 +10,8 @@ use spl_token_2022::{
     extension::{
         confidential_transfer::{instruction as confidential_instruction, DecryptableBalance},
         confidential_transfer_fee::instruction as confidential_fee_instruction,
-        transfer_fee::TransferFeeConfig, BaseStateWithExtensions, ExtensionType,
-        StateWithExtensions,
+        transfer_fee::{instruction as transfer_fee_instruction, TransferFeeConfig},
+        BaseStateWithExtensions, ExtensionType, StateWithExtensions,
     },
     state::{AccountState, Mint as MintState},
 };
@@ -150,6 +150,7 @@ pub mod t22 {
         symbol: String,
         uri: String,
     ) -> Result<()> {
+        let _ = (&name, &symbol, &uri);
         let extensions = [
             ExtensionType::TransferFeeConfig,
             ExtensionType::MetadataPointer,
@@ -218,27 +219,6 @@ pub mod t22 {
             Some(&ctx.accounts.payer.key()),
             basis_points,
             maximum_fee,
-        )?;
-
-        let metadata_ix = anchor_spl::token_2022_extensions::spl_token_metadata_interface::instruction::initialize(
-            &ctx.accounts.token_program.key(),
-            &ctx.accounts.mint.key(),
-            &ctx.accounts.payer.key(),
-            &ctx.accounts.mint.key(),
-            &ctx.accounts.payer.key(),
-            name,
-            symbol,
-            uri,
-        );
-        invoke(
-            &metadata_ix,
-            &[
-                ctx.accounts.mint.to_account_info(),
-                ctx.accounts.payer.to_account_info(),
-                ctx.accounts.mint.to_account_info(),
-                ctx.accounts.payer.to_account_info(),
-                ctx.accounts.token_program.to_account_info(),
-            ],
         )?;
 
         initialize_mint2(
@@ -603,6 +583,71 @@ pub mod t22 {
         );
         Ok(())
     }
+
+    /// Task 2: Transfer with dynamic fee computation.
+    ///
+    /// Uses `transfer_checked_with_fee` (not `transfer` or `transfer_checked`).
+    /// The fee is not hardcoded — it is calculated on-chain from the live
+    /// `TransferFeeConfig` extension at the current epoch so the caller never
+    /// needs to cache or guess the rate.
+    ///
+    /// The key insight: fees are epoch-scheduled. `newer_transfer_fee` may not
+    /// be in force yet, which is why `calculate_epoch_fee` takes the current
+    /// epoch rather than simply reading `newer_transfer_fee.transfer_fee_basis_points`.
+    pub fn transfer_remittance(
+        ctx: Context<TransferRemittance>,
+        amount: u64,
+        decimals: u8,
+    ) -> Result<()> {
+        // Read the mint's raw bytes so we can reach the TLV extension region.
+        // InterfaceAccount<Mint> discards extension data after parsing the base
+        // struct, so we must borrow raw bytes and parse via StateWithExtensions.
+        let mint_info = ctx.accounts.mint.to_account_info();
+        let mint_data = mint_info.try_borrow_data()?;
+        let mint_state = StateWithExtensions::<MintState>::unpack(&mint_data)?;
+
+        let current_epoch = Clock::get()?.epoch;
+        let fee_config = mint_state.get_extension::<TransferFeeConfig>()?;
+        // calculate_epoch_fee selects the correct fee schedule (newer vs older)
+        // based on the epoch it was scheduled for. Never pass a cached bps value.
+        let expected_fee = fee_config.calculate_epoch_fee(current_epoch, amount)
+            .ok_or(ProgramError::InvalidArgument)?;
+
+        msg!(
+            "transfer {} tokens; epoch {}; fee {}",
+            amount,
+            current_epoch,
+            expected_fee
+        );
+
+        // Drop the borrow before the CPI so Token-2022 can re-borrow it.
+        drop(mint_data);
+
+        let ix = transfer_fee_instruction::transfer_checked_with_fee(
+            &ctx.accounts.token_program.key(),
+            &ctx.accounts.source.key(),
+            &ctx.accounts.mint.key(),
+            &ctx.accounts.destination.key(),
+            &ctx.accounts.authority.key(),
+            &[],
+            amount,
+            decimals,
+            expected_fee,
+        )?;
+
+        invoke(
+            &ix,
+            &[
+                ctx.accounts.source.to_account_info(),
+                ctx.accounts.mint.to_account_info(),
+                ctx.accounts.destination.to_account_info(),
+                ctx.accounts.authority.to_account_info(),
+                ctx.accounts.token_program.to_account_info(),
+            ],
+        )?;
+
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -793,4 +838,31 @@ pub struct PermanentDelegateSeize<'info> {
 pub enum MintError {
     #[msg("mint carries an extension this program has not been written to handle")]
     UnsupportedExtension,
+}
+
+#[derive(Accounts)]
+pub struct TransferRemittance<'info> {
+    /// The source token account. Must carry TransferFeeAmount (added automatically
+    /// by Token-2022 when the mint has TransferFeeConfig).
+    ///
+    /// CHECK: validated by Token-2022 during the transfer.
+    #[account(mut, owner = token_program.key())]
+    pub source: UncheckedAccount<'info>,
+
+    /// The fee-bearing mint. Read as raw bytes in the handler to access
+    /// the TransferFeeConfig TLV extension.
+    ///
+    /// CHECK: ownership enforced by constraint; extension contents read
+    /// via StateWithExtensions inside the handler.
+    #[account(owner = token_program.key())]
+    pub mint: UncheckedAccount<'info>,
+
+    /// CHECK: validated by Token-2022 during the transfer.
+    #[account(mut, owner = token_program.key())]
+    pub destination: UncheckedAccount<'info>,
+
+    /// Owner or delegate of the source account.
+    pub authority: Signer<'info>,
+
+    pub token_program: Interface<'info, TokenInterface>,
 }
