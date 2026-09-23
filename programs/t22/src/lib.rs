@@ -648,6 +648,39 @@ pub mod t22 {
 
         Ok(())
     }
+
+    /// Task 4: KYC thaw — unfreeze an individual account after KYC clears.
+    ///
+    /// Because `DefaultAccountState(Frozen)` is on the mint, every new token
+    /// account starts life frozen. The freeze authority calls this instruction
+    /// per account once KYC passes. It deliberately targets a single account
+    /// rather than calling `update_default_account_state`, which would lower
+    /// the default for *all* future accounts globally.
+    pub fn kyc_thaw(ctx: Context<KycThaw>) -> Result<()> {
+        let ix = spl_token_2022::instruction::thaw_account(
+            &ctx.accounts.token_program.key(),
+            &ctx.accounts.token_account.key(),
+            &ctx.accounts.mint.key(),
+            &ctx.accounts.freeze_authority.key(),
+            &[],
+        )?;
+
+        invoke(
+            &ix,
+            &[
+                ctx.accounts.token_account.to_account_info(),
+                ctx.accounts.mint.to_account_info(),
+                ctx.accounts.freeze_authority.to_account_info(),
+                ctx.accounts.token_program.to_account_info(),
+            ],
+        )?;
+
+        msg!(
+            "account {} thawed after KYC",
+            ctx.accounts.token_account.key()
+        );
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -863,6 +896,24 @@ pub struct TransferRemittance<'info> {
 
     /// Owner or delegate of the source account.
     pub authority: Signer<'info>,
+
+    pub token_program: Interface<'info, TokenInterface>,
+}
+
+#[derive(Accounts)]
+pub struct KycThaw<'info> {
+    /// The individual token account to thaw after KYC passes.
+    ///
+    /// CHECK: validated by Token-2022 during thaw_account.
+    #[account(mut, owner = token_program.key())]
+    pub token_account: UncheckedAccount<'info>,
+
+    /// CHECK: validated by Token-2022 (must match the mint's freeze authority).
+    #[account(owner = token_program.key())]
+    pub mint: UncheckedAccount<'info>,
+
+    /// The freeze_authority on the remittance mint. Only this signer can thaw.
+    pub freeze_authority: Signer<'info>,
 
     pub token_program: Interface<'info, TokenInterface>,
 }
