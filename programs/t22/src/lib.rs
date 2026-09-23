@@ -236,6 +236,193 @@ pub mod t22 {
         Ok(())
     }
 
+    /// Task 5: Re-issued mint v2 stacking 6 extensions.
+    ///
+    /// Combines all 4 extensions from Task 1 (MintCloseAuthority, MetadataPointer,
+    /// DefaultAccountState, TransferFeeConfig) with PermanentDelegate and
+    /// ConfidentialTransferMint (with approve_policy = manual, i.e.,
+    /// auto_approve_new_accounts = false).
+    ///
+    /// Sized via `ExtensionType::try_calculate_account_len` over all six extensions,
+    /// with every extension-init instruction executed strictly before `InitializeMint2`.
+    pub fn create_remittance_mint_v2(
+        ctx: Context<CreateRemittanceMintV2>,
+        decimals: u8,
+        basis_points: u16,
+        maximum_fee: u64,
+        auto_approve_new_accounts: bool,
+        withdraw_withheld_authority_elgamal_pubkey: [u8; 32],
+    ) -> Result<()> {
+        let extensions = [
+            ExtensionType::MintCloseAuthority,
+            ExtensionType::PermanentDelegate,
+            ExtensionType::MetadataPointer,
+            ExtensionType::DefaultAccountState,
+            ExtensionType::TransferFeeConfig,
+            ExtensionType::ConfidentialTransferMint,
+            ExtensionType::ConfidentialTransferFeeConfig,
+        ];
+        let space = ExtensionType::try_calculate_account_len::<MintState>(&extensions)?;
+        let lamports = Rent::get()?.minimum_balance(space);
+
+        anchor_lang::system_program::create_account(
+            CpiContext::new(
+                ctx.accounts.system_program.key(),
+                anchor_lang::system_program::CreateAccount {
+                    from: ctx.accounts.payer.to_account_info(),
+                    to: ctx.accounts.mint.to_account_info(),
+                },
+            ),
+            lamports,
+            space as u64,
+            &ctx.accounts.token_program.key(),
+        )?;
+
+        // 1. MintCloseAuthority
+        mint_close_authority_initialize(
+            CpiContext::new(
+                ctx.accounts.token_program.key(),
+                MintCloseAuthorityInitialize {
+                    token_program_id: ctx.accounts.token_program.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
+                },
+            ),
+            Some(&ctx.accounts.payer.key()),
+        )?;
+
+        // 2. PermanentDelegate
+        let pd_ix = spl_token_2022::instruction::initialize_permanent_delegate(
+            &ctx.accounts.token_program.key(),
+            &ctx.accounts.mint.key(),
+            &ctx.accounts.payer.key(),
+        )?;
+        invoke(
+            &pd_ix,
+            &[
+                ctx.accounts.mint.to_account_info(),
+                ctx.accounts.token_program.to_account_info(),
+            ],
+        )?;
+
+        // 3. MetadataPointer (pointing to the mint itself)
+        metadata_pointer_initialize(
+            CpiContext::new(
+                ctx.accounts.token_program.key(),
+                anchor_spl::token_interface::MetadataPointerInitialize {
+                    token_program_id: ctx.accounts.token_program.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
+                },
+            ),
+            Some(ctx.accounts.payer.key()),
+            Some(ctx.accounts.mint.key()),
+        )?;
+
+        // 4. DefaultAccountState (Frozen)
+        default_account_state_initialize(
+            CpiContext::new(
+                ctx.accounts.token_program.key(),
+                anchor_spl::token_interface::DefaultAccountStateInitialize {
+                    token_program_id: ctx.accounts.token_program.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
+                },
+            ),
+            &AccountState::Frozen,
+        )?;
+
+        // 5. TransferFeeConfig
+        transfer_fee_initialize(
+            CpiContext::new(
+                ctx.accounts.token_program.key(),
+                TransferFeeInitialize {
+                    token_program_id: ctx.accounts.token_program.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
+                },
+            ),
+            Some(&ctx.accounts.payer.key()),
+            Some(&ctx.accounts.payer.key()),
+            basis_points,
+            maximum_fee,
+        )?;
+
+        // 6. ConfidentialTransferMint
+        let ct_ix = confidential_instruction::initialize_mint(
+            &ctx.accounts.token_program.key(),
+            &ctx.accounts.mint.key(),
+            Some(ctx.accounts.payer.key()),
+            auto_approve_new_accounts,
+            None,
+        )?;
+        invoke(
+            &ct_ix,
+            &[
+                ctx.accounts.mint.to_account_info(),
+                ctx.accounts.token_program.to_account_info(),
+            ],
+        )?;
+
+        // 7. ConfidentialTransferFeeConfig (mandatory when TransferFeeConfig + ConfidentialTransferMint coexist)
+        let ctf_ix = confidential_fee_instruction::initialize_confidential_transfer_fee_config(
+            &ctx.accounts.token_program.key(),
+            &ctx.accounts.mint.key(),
+            Some(ctx.accounts.payer.key()),
+            &withdraw_withheld_authority_elgamal_pubkey.into(),
+        )?;
+        invoke(
+            &ctf_ix,
+            &[
+                ctx.accounts.mint.to_account_info(),
+                ctx.accounts.token_program.to_account_info(),
+            ],
+        )?;
+
+        // Finally: InitializeMint2
+        initialize_mint2(
+            CpiContext::new(
+                ctx.accounts.token_program.key(),
+                InitializeMint2 {
+                    mint: ctx.accounts.mint.to_account_info(),
+                },
+            ),
+            decimals,
+            &ctx.accounts.payer.key(),
+            Some(&ctx.accounts.payer.key()),
+        )?;
+
+        Ok(())
+    }
+
+    /// Task 5 helper: issuer approves an individual account for confidential transfers.
+    ///
+    /// Required when the mint was created with `auto_approve_new_accounts = false`
+    /// (approve_policy = manual).
+    pub fn approve_confidential_account(
+        ctx: Context<ApproveConfidentialAccount>,
+    ) -> Result<()> {
+        let ix = confidential_instruction::approve_account(
+            &ctx.accounts.token_program.key(),
+            &ctx.accounts.token_account.key(),
+            &ctx.accounts.mint.key(),
+            &ctx.accounts.authority.key(),
+            &[],
+        )?;
+
+        invoke(
+            &ix,
+            &[
+                ctx.accounts.token_account.to_account_info(),
+                ctx.accounts.mint.to_account_info(),
+                ctx.accounts.authority.to_account_info(),
+                ctx.accounts.token_program.to_account_info(),
+            ],
+        )?;
+
+        msg!(
+            "account {} approved for confidential transfers",
+            ctx.accounts.token_account.key()
+        );
+        Ok(())
+    }
+
     /// `InterfaceAccount<'info, Mint>` looks like it gives you the whole mint.
     /// It does not. Anchor's deserializer runs
     /// `StateWithExtensions::unpack(buf).map(|t| Mint(t.base))`, which parses
@@ -914,6 +1101,39 @@ pub struct KycThaw<'info> {
 
     /// The freeze_authority on the remittance mint. Only this signer can thaw.
     pub freeze_authority: Signer<'info>,
+
+    pub token_program: Interface<'info, TokenInterface>,
+}
+
+#[derive(Accounts)]
+pub struct CreateRemittanceMintV2<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    /// CHECK: created and initialized directly via CPIs in the handler.
+    #[account(mut, signer)]
+    pub mint: UncheckedAccount<'info>,
+
+    pub token_program: Interface<'info, TokenInterface>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct ApproveConfidentialAccount<'info> {
+    /// Token account to approve for confidential transfers.
+    ///
+    /// CHECK: validated by Token-2022 confidential transfer extension.
+    #[account(mut, owner = token_program.key())]
+    pub token_account: UncheckedAccount<'info>,
+
+    /// Mint with ConfidentialTransferMint extension.
+    ///
+    /// CHECK: validated by Token-2022.
+    #[account(owner = token_program.key())]
+    pub mint: UncheckedAccount<'info>,
+
+    /// Confidential transfer authority on the mint.
+    pub authority: Signer<'info>,
 
     pub token_program: Interface<'info, TokenInterface>,
 }
