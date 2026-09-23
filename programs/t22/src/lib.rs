@@ -1,4 +1,3 @@
-
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program::invoke;
 use anchor_spl::token_interface::{
@@ -19,9 +18,8 @@ use spl_token_2022::{
 
 // The length of a ciphertext which is how a decryptable balance is represented in the account data
 pub const AE_CIPHERTEXT_LEN: usize = 36;
- 
-declare_id!("6sC5C8VFoTpEZQVn3YK9EUSd5g3Cs6zTT3HCDBGQkyo4");
 
+declare_id!("6sC5C8VFoTpEZQVn3YK9EUSd5g3Cs6zTT3HCDBGQkyo4");
 
 const SUPPORTED_EXTENSIONS: &[ExtensionType] = &[
     ExtensionType::MintCloseAuthority,
@@ -54,8 +52,6 @@ pub mod t22 {
         Ok(())
     }
 
-
-
     //the imperative path.
     /// Anchor's `extensions::` constraints cover a closed set of seven:
     /// group_pointer, group_member_pointer, metadata_pointer, close_authority,
@@ -76,13 +72,13 @@ pub mod t22 {
             ExtensionType::MintCloseAuthority,
             ExtensionType::TransferFeeConfig,
         ];
- 
+
         // Phase 1: allocate at the full extended length. Getting this number
         // from anywhere other than `try_calculate_account_len` is how mints
         // end up too small to initialize.
         let space = ExtensionType::try_calculate_account_len::<MintState>(&extensions)?;
         let lamports = Rent::get()?.minimum_balance(space);
- 
+
         anchor_lang::system_program::create_account(
             CpiContext::new(
                 ctx.accounts.system_program.key(),
@@ -95,7 +91,7 @@ pub mod t22 {
             space as u64,
             &ctx.accounts.token_program.key(),
         )?;
- 
+
         // Phase 2: initialize each extension, before the mint itself exists.
         mint_close_authority_initialize(
             CpiContext::new(
@@ -107,7 +103,7 @@ pub mod t22 {
             ),
             Some(&ctx.accounts.payer.key()),
         )?;
- 
+
         transfer_fee_initialize(
             CpiContext::new(
                 ctx.accounts.token_program.key(),
@@ -121,7 +117,7 @@ pub mod t22 {
             basis_points,
             maximum_fee,
         )?;
- 
+
         // Phase 3: seal the mint. Nothing can be added after this point, and
         // most mint extensions cannot be added later at all, so a mistake here
         // is permanent rather than recoverable.
@@ -136,7 +132,7 @@ pub mod t22 {
             &ctx.accounts.payer.key(),
             None,
         )?;
- 
+
         msg!(
             "mint {} created with {} bytes",
             ctx.accounts.mint.key(),
@@ -269,7 +265,7 @@ pub mod t22 {
     /// nothing about extensions. To see them you re-borrow the raw bytes and
     /// run `StateWithExtensions` yourself. That is the same call the plain
     /// Rust client makes.
-    /// 
+    ///
     /// Confidential TF: creating the mint.
     ///
     /// ConfidentialTransferMint is not one of Anchor's seven `extensions::`
@@ -284,7 +280,7 @@ pub mod t22 {
             ExtensionType::ConfidentialTransferMint,
         ])?;
         let lamports = Rent::get()?.minimum_balance(space);
- 
+
         anchor_lang::system_program::create_account(
             CpiContext::new(
                 ctx.accounts.system_program.key(),
@@ -297,7 +293,7 @@ pub mod t22 {
             space as u64,
             &ctx.accounts.token_program.key(),
         )?;
- 
+
         // No auditor key here. Passing Some(pubkey) would let its holder
         // decrypt every transfer amount for this mint, which is the usual
         // compliance escape hatch.
@@ -315,7 +311,7 @@ pub mod t22 {
                 ctx.accounts.token_program.to_account_info(),
             ],
         )?;
- 
+
         initialize_mint2(
             CpiContext::new(
                 ctx.accounts.token_program.key(),
@@ -327,7 +323,7 @@ pub mod t22 {
             &ctx.accounts.payer.key(),
             None,
         )?;
- 
+
         msg!(
             "confidential mint {} at {} bytes",
             ctx.accounts.mint.key(),
@@ -435,7 +431,7 @@ pub mod t22 {
     }
 
 
-     /// Confidential: deposit.
+    /// Confidential: deposit.
     ///
     /// The only step of the confidential lifecycle a program can drive on its
     /// own. Moving tokens from the public balance into the pending
@@ -466,8 +462,7 @@ pub mod t22 {
         )?;
         Ok(())
     }
- 
-    
+
     /// Confidential: apply pending balance.
     ///
     /// Incoming deposits and transfers land in a pending balance that cannot
@@ -501,7 +496,6 @@ pub mod t22 {
         )?;
         Ok(())
     }
-    
      /// Creates a mint whose permanent delegate is the payer.
     pub fn create_seizable_mint(ctx: Context<CreateSeizableMint>, decimals: u8) -> Result<()> {
         msg!("seizable mint {} with {} deccimals, permanent delegate", 
@@ -571,26 +565,22 @@ pub mod t22 {
         Ok(())
     }
  
-
     pub fn assert_supported_mint(ctx: Context<AssertSupportedMint>) -> Result<()> {
-      
-        
- 
         // Not available from the typed account. Drop to the raw bytes.
         let account_info = ctx.accounts.mint.to_account_info();
         let data = account_info.try_borrow_data()?;
         let state = StateWithExtensions::<MintState>::unpack(&data)?;
-          
-          // Available from the typed account, no extension awareness needed.
+
+        // Available from the typed account, no extension awareness needed.
         let decimals = state.base.decimals;
- 
+
         for extension in state.get_extension_types()? {
             require!(
                 SUPPORTED_EXTENSIONS.contains(&extension),
                 MintError::UnsupportedExtension
             );
         }
- 
+
         // A transfer fee means the amount credited is not the amount debited.
         // Any accounting that assumes otherwise is wrong against this mint, so
         // read the live fee rather than assuming zero.
@@ -605,7 +595,7 @@ pub mod t22 {
             ),
             Err(_) => 0,
         };
- 
+
         msg!(
             "mint accepted: {} decimals, {} bps fee",
             decimals,
@@ -613,17 +603,14 @@ pub mod t22 {
         );
         Ok(())
     }
- 
-  
 }
-
 
 #[derive(Accounts)]
 #[instruction(decimals: u8)]
 pub struct CreateMintDeclarative<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
- 
+
     /// each extension constraints below adds an
     /// `ExtensionType` to the size calculation and a CPI to the init sequence.
     #[account(
@@ -637,17 +624,16 @@ pub struct CreateMintDeclarative<'info> {
         extensions::metadata_pointer::metadata_address = payer,
     )]
     pub mint: InterfaceAccount<'info, Mint>,
- 
+
     pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
-
 
 #[derive(Accounts)]
 pub struct CreateMintWithFee<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
- 
+
     /// Unchecked because the account does not exist yet and Anchor has no
     /// constraint that can describe a transfer fee mint. The instruction body
     /// creates and initializes it.
@@ -656,7 +642,7 @@ pub struct CreateMintWithFee<'info> {
     /// because the account is made at its own address.
     #[account(mut, signer)]
     pub mint: UncheckedAccount<'info>,
- 
+
     pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
@@ -673,7 +659,7 @@ pub struct CreateRemittanceMint<'info> {
     pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
- 
+
 #[derive(Accounts)]
 pub struct AssertSupportedMint<'info> {
     /// Unchecked so the account is parsed exactly once, in the handler.
@@ -695,12 +681,12 @@ pub struct AssertSupportedMint<'info> {
 pub struct CreateConfidentialMint<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
- 
+
     /// CHECK: created and initialized in the handler, signs because the
     /// account is made at its own address.
     #[account(mut, signer)]
     pub mint: UncheckedAccount<'info>,
- 
+
     pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
@@ -725,21 +711,21 @@ pub struct DepositConfidential<'info> {
     /// a token account for this mint configured for confidential transfers.
     #[account(mut, owner = token_program.key())]
     pub token_account: UncheckedAccount<'info>,
- 
+
     /// CHECK: validated by Token-2022 during the deposit.
     #[account(owner = token_program.key())]
     pub mint: UncheckedAccount<'info>,
- 
+
     pub authority: Signer<'info>,
     pub token_program: Interface<'info, TokenInterface>,
 }
- 
+
 #[derive(Accounts)]
 pub struct ApplyPendingBalance<'info> {
     /// CHECK: validated by Token-2022.
     #[account(mut, owner = token_program.key())]
     pub token_account: UncheckedAccount<'info>,
- 
+
     pub authority: Signer<'info>,
     pub token_program: Interface<'info, TokenInterface>,
 }

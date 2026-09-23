@@ -7,7 +7,10 @@ use anchor_lang::{
 use anchor_spl::token_interface::spl_token_2022::{
     extension::{
         default_account_state::instruction::initialize_default_account_state,
-        mint_close_authority::MintCloseAuthority, transfer_fee::TransferFeeConfig,
+        default_account_state::DefaultAccountState,
+        metadata_pointer::MetadataPointer,
+        mint_close_authority::MintCloseAuthority,
+        transfer_fee::TransferFeeConfig,
         BaseStateWithExtensions, ExtensionType, StateWithExtensions,
     },
     instruction::initialize_mint2,
@@ -225,6 +228,71 @@ fn manual_path_produces_a_working_transfer_fee_mint() {
     );
     assert_eq!(
         u64::from(config.newer_transfer_fee.maximum_fee),
+        MAXIMUM_FEE
+    );
+}
+
+#[test]
+fn remittance_mint_has_the_complete_task_one_extension_set() {
+    let (mut svm, payer) = setup();
+    let mint = Keypair::new();
+
+    let ix = Instruction {
+        program_id: ID,
+        accounts: accounts::CreateRemittanceMint {
+            payer: payer.pubkey(),
+            mint: mint.pubkey(),
+            token_program: TOKEN_2022_PROGRAM_ID,
+            system_program: system_program::ID,
+        }
+        .to_account_metas(None),
+        data: instruction::CreateRemittanceMint {
+            decimals: DECIMALS,
+            basis_points: BASIS_POINTS,
+            maximum_fee: MAXIMUM_FEE,
+            name: "Remittance Dollar".to_owned(),
+            symbol: "RUSD".to_owned(),
+            uri: "https://example.com/rusd.json".to_owned(),
+        }
+        .data(),
+    };
+    send(&mut svm, &payer, ix, &[&mint]);
+
+    let account = svm.get_account(&mint.pubkey()).unwrap();
+    let expected_len = ExtensionType::try_calculate_account_len::<MintState>(&[
+        ExtensionType::TransferFeeConfig,
+        ExtensionType::MetadataPointer,
+        ExtensionType::DefaultAccountState,
+        ExtensionType::MintCloseAuthority,
+    ])
+    .unwrap();
+    assert_eq!(account.data.len(), expected_len);
+
+    let state = StateWithExtensions::<MintState>::unpack(&account.data).unwrap();
+    assert_eq!(state.base.decimals, DECIMALS);
+    assert_eq!(
+        state.get_extension_types().unwrap(),
+        vec![
+            ExtensionType::MintCloseAuthority,
+            ExtensionType::MetadataPointer,
+            ExtensionType::DefaultAccountState,
+            ExtensionType::TransferFeeConfig,
+        ]
+    );
+
+    let pointer = state.get_extension::<MetadataPointer>().unwrap();
+    assert_eq!(Option::<Pubkey>::from(pointer.metadata_address), Some(mint.pubkey()));
+
+    let default_state = state.get_extension::<DefaultAccountState>().unwrap();
+    assert_eq!(default_state.state, AccountState::Frozen as u8);
+
+    let fee_config = state.get_extension::<TransferFeeConfig>().unwrap();
+    assert_eq!(
+        u16::from(fee_config.newer_transfer_fee.transfer_fee_basis_points),
+        BASIS_POINTS
+    );
+    assert_eq!(
+        u64::from(fee_config.newer_transfer_fee.maximum_fee),
         MAXIMUM_FEE
     );
 }
